@@ -1,0 +1,845 @@
+---
+title: "NN_sim7 HPCC"
+author: "Zhe Fei"
+date: "2023-06-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(abind)
+library(ggplot2)
+library(gridExtra)
+library(reticulate)
+library(tidyverse)
+
+Sys.setenv(RETICULATE_PYTHON = "/Users/feiz/miniforge3/bin/python3")
+
+use_python("/Users/feiz/miniforge3/bin/python3")
+
+# Load the NumPy library
+np <- import("numpy")
+```
+
+## ONE RUN
+
+```{r}
+setwd("../NN_sim/HPCC")
+path = "../NN_sim/HPCC/"
+```
+
+```{r}
+dat_test = read.table(paste0(path,"df_999.txt"))
+y_test = dat_test[,1]
+y_test_obs = dat_test[,2]
+
+plot(y_test, y_test_obs)
+mean((y_test - y_test_obs)^2)
+```
+
+```{r}
+dat0 = read.table(paste0(path,"df_0.txt"))
+y = dat0[,1]
+y_obs = dat0[,2]
+range(dat0[,3:4])
+
+cor1 = cor(dat0[,-(1:2)], y)
+plot(cor1)
+which(cor1>0.1)
+
+plot(dat0[,11+2], y)
+```
+
+```{r}
+train1 = read.table(paste0(path,"train_loss_dat0_Brep=1999.txt"))
+hist(train1[,1])
+
+train2 = read.table(paste0(path,"train_loss_dat0_Brep=2000.txt"))
+hist(c(train1[,1],train2[,1]))
+
+val1 = read.table(paste0(path,"val_loss_dat0_Brep=1999.txt"))
+hist(val1[,1])
+
+val2 = read.table(paste0(path,"val_loss_dat0_Brep=2000.txt"))
+
+val1 = c(val1[,1],val2[,1])
+```
+
+### predictions
+
+```{r}
+ymat1 = read.table(paste0(path,"ypred_dat0_Brep=1999.txt"))
+plot(colSums(ymat1!=0))
+
+ymat2 = read.table(paste0(path,"ypred_dat0_Brep=2000.txt"))
+ymat1 = rbind(ymat1, ymat2)
+
+n = 400
+ntest = 100
+```
+
+```{r}
+yvalmat = ymat1[,1:n]
+yval_pred = apply(yvalmat,2,function(v1){
+  mean(v1[v1!=0])
+})
+
+cor(y_obs, yval_pred)
+cor(y, yval_pred)
+
+mean((y_obs - yval_pred)^2)
+```
+
+
+```{r}
+ycountmat = (yvalmat ==0) + 0
+
+# print(dim(ycountmat))
+maxB = nrow(ycountmat)
+Bseq = 200*(1:20)
+ypredVar = NULL
+for(k in 1:20){
+  B = min(Bseq[k], maxB)
+  
+  ypred_v1 = apply(ymat1[1:B, -(1:n)], 2, varfn, Ycount = ycountmat[1:B,],
+             replace = FALSE, unbiased = TRUE)
+  ypred_v2 = apply(ymat1[1:B, -(1:n)], 2, varfn, Ycount = ycountmat[1:B,],
+             replace = FALSE, unbiased = FALSE)
+  
+  ypredVar = abind(ypredVar, cbind(ypred_v1,ypred_v2), along = 3)
+}
+
+dim(ypredVar )
+```
+
+```{r}
+hist(ypredVar[,1,20])
+hist(ypredVar[,2,20])
+
+med_ypredvar = apply(ypredVar, c(2,3), median)
+varsmat = data.frame(cbind(Bseq,t(med_ypredvar)))
+
+ggplot(varsmat) + 
+  geom_line(aes(Bseq, ypred_v2)) +
+  geom_line(aes(Bseq, ypred_v1), col="red")
+```
+
+
+
+
+### CI and coverage
+
+```{r}
+k = 3
+res_test = data.frame(
+  y_test,
+  y_test_obs,
+  ypred = colMeans(ymat1[, -(1:n)]),
+  se1 = sqrt(ypredVar[,1,k]),
+  se2 = sqrt(ypredVar[,2,k])
+)
+```
+
+
+```{r}
+summary(val1)
+mean((y - y_obs)^2)
+mean((y_test - y_test_obs)^2)
+mean((y_test_obs - res_test$ypred)^2)
+mean((y_obs - yval_pred )^2)
+
+sig_e2 = mean(val1)
+  
+res_test = res_test%>%mutate(
+  u1 = ypred + 1.96*sqrt(se1^2 + sig_e2),
+  l1 = ypred - 1.96*sqrt(se1^2 + sig_e2),
+  u2 = ypred + 1.96*sqrt(se2^2 + sig_e2),
+  l2 = ypred - 1.96*sqrt(se2^2 + sig_e2),
+  cov1 = (y_test_obs <= u1) * (y_test_obs >= l1),
+  cov2 = (y_test_obs <= u2) * (y_test_obs >= l2),
+  cov01 = (y_test <= ypred + 1.96*se1) * (y_test >= ypred - 1.96*se1),
+  cov02 = (y_test <= ypred + 1.96*se2) * (y_test >= ypred - 1.96*se2)
+)
+
+table(res_test$cov1)
+table(res_test$cov2)
+table(res_test$cov01)
+table(res_test$cov02)
+```
+
+
+```{r}
+ggplot(res_test)+
+  geom_point(aes(y_test,ypred ))
+
+```
+
+
+## All runs
+
+```{r}
+# Read the .npy file as a NumPy array
+train_losses <- np$load(paste0(path,"_train_losses.npy"))
+val_losses <- np$load(paste0(path,"_val_losses.npy"))
+ntrain_epochs <- np$load(paste0(path,"_ntrain_epochs.npy"))
+y_preds <- np$load(paste0(path,"_y_preds_arr.npy"))
+
+train_losses <- np$array(train_losses)
+val_losses <- np$array(val_losses)
+ntrain_epochs <- np$array(ntrain_epochs)
+y_preds <- np$array(y_preds)
+```
+
+- second batch
+```{r}
+train_losses_133 <- np$load(paste0(path,"_train_losses_133.npy"))
+val_losses_133 <- np$load(paste0(path,"_val_losses_133.npy"))
+ntrain_epochs_133 <- np$load(paste0(path,"_ntrain_epochs_133.npy"))
+y_preds_133 <- np$load(paste0(path,"_y_preds_arr_133.npy"))
+
+train_losses_133 <- np$array(train_losses_133)
+val_losses_133 <- np$array(val_losses_133)
+ntrain_epochs_133 <- np$array(ntrain_epochs_133)
+y_preds_133 <- np$array(y_preds_133)
+
+
+```
+
+```{r}
+train_losses[194:280, ] <- train_losses_133[194:280, ]
+val_losses[194:280, ] <- val_losses_133[194:280, ]
+ntrain_epochs[194:280, ] <- ntrain_epochs_133[194:280, ]
+y_preds[194:280,, ] <- y_preds_133[194:280,, ]
+
+
+nks = which(val_losses[,1]>0)
+nks = nks[-1]
+```
+
+
+
+```{r}
+train_losses = train_losses[nks,]
+val_losses = val_losses[nks,]
+
+y_preds = y_preds[nks,,]
+
+
+hist(rowMeans(train_losses))
+hist(rowMeans(val_losses))
+hist(rowMeans(ntrain_epochs[nks,]))
+```
+
+
+```{r}
+dim(y_preds)
+
+
+nk = dim(y_preds)[1]
+n = 400
+ntest = 100
+
+acc = function(v1,v2){
+  cor1 = cor(v1,v2)
+  mae = mean(abs(v1 - v2))
+  bias = mean(v1 - v2)
+  c(cor1, mae, bias)
+}
+```
+
+
+```{r}
+y_pred_mean = apply(y_preds, 3, mean)
+acc(y_test, y_pred_mean[-(1:n)])
+acc(y_test_obs, y_pred_mean[-(1:n)])
+```
+
+### empsd ytest
+
+```{r}
+B = dim(y_preds)[2]
+
+ymat_test = apply(y_preds[,,(n+1):(n+ntest)], c(1,3), mean)
+empsd_ytest = apply(ymat_test,2,sd)
+summary(empsd_ytest)
+hist(empsd_ytest)
+
+```
+
+```{r}
+plot(y_test, empsd_ytest)
+plot(y_test_obs, empsd_ytest)
+
+summary((y_test - y_test_obs)^2)
+```
+
+
+### var_y_pred and coverage
+
+
+```{r}
+vars_arr = NULL
+
+pdf(paste0(path,"NN_sim_7_vars_",nk,".pdf"),
+    onefile = TRUE)
+par(mfrow=c(2,2))
+for (j in 1:nk){
+  yfitmat = y_preds[j,,]
+  val_loss_vec = val_losses[j,]
+  sig_e2 = mean(val_loss_vec)
+  
+  ypred = colMeans(yfitmat[,-(1:n)])
+  sd_ypred = apply(yfitmat[,-(1:n)],2,sd) ## empirical sd among B subsamples
+  var_B = sd_ypred^2 
+  
+  yvalmat = yfitmat[,1:n]
+
+  ycountmat = (yvalmat ==0) + 0
+  # print(dim(ycountmat))
+  ypred_var1 = apply(t(yfitmat[,-(1:n)]), 1, varfn, Ycount = ycountmat,
+               replace = FALSE, unbiased = TRUE, fac = 0.9)
+  # plot(empsd_ytest, sqrt(ypred_var))
+  
+  ypred_var2 = apply(t(yfitmat[,-(1:n)]), 1, varfn, Ycount = ycountmat,
+               replace = FALSE, unbiased = FALSE)
+  # ypred_var3 = (ypred_var2 + ypred_var)/2
+  SE1 = sqrt(ypred_var1 + sig_e2)
+  SE2 = sqrt(ypred_var2 + sig_e2)
+  cov1 = (y_test_obs <= ypred + 1.96*SE1)*(y_test_obs >= ypred - 1.96*SE1)
+  cov2 = (y_test_obs <= ypred + 1.96*SE2)*(y_test_obs >= ypred - 1.96*SE2)
+    
+  vars_mat = cbind(
+    y_test_obs,
+    ypred,
+    empsd_ytest, 
+    sd_ypred,
+    SE1,
+    SE2,
+    var_B,
+    ypred_var1, 
+    ypred_var2,
+    cov1,
+    cov2
+  )
+  
+  vars_arr = abind(vars_arr, vars_mat, along = 3)
+  
+  
+  
+  tit1 = paste0("nsim = ",j)
+  plot(empsd_ytest, sqrt(ypred_var1),
+       main=tit1)
+  abline(0,1)
+  
+  plot(empsd_ytest, sd_ypred,
+       main=tit1)
+  abline(0,1)
+
+  
+}
+dev.off()
+dim(vars_arr)
+```
+
+
+```{r}
+covprobs = apply(vars_arr[,10:11,], c(1,2), mean)
+colMeans(covprobs)
+```
+
+
+```{r}
+avg_vars_mat = apply(vars_arr, c(1,2), mean)
+colnames(avg_vars_mat)
+colnames(avg_vars_mat)[3:5] = c("empsd_ytest","sd_ypred","SE1")
+
+SE2var = apply(vars_arr[, 6, ], 1, sd)
+summary(SE2var)
+
+avg_vars_mat = as.data.frame(avg_vars_mat)
+
+
+avg_vars_mat = avg_vars_mat%>%
+  mutate(
+    SE2sd = SE2var,
+    upper = ypred + 1.96*SE2,
+    lower = ypred - 1.96*SE2,
+    cov2avg = (y_test_obs <= upper)*(y_test_obs >= lower)
+  
+  )
+table(avg_vars_mat$cov2avg)
+
+summary(avg_vars_mat)
+
+summary(avg_vars_mat$empsd_ytest)
+summary(avg_vars_mat$SE2^2)
+```
+
+
+```{r}
+p_avg_CIs = ggplot(avg_vars_mat,aes(y_test_obs, ypred, 
+                                    col=as.factor(cov2avg))) +
+  geom_point() + ylab("Prediction") + xlab("Test observations") +
+  ggtitle("c. NN prediction intervals") + 
+  geom_errorbar(aes(ymin = lower,
+                    ymax = upper)) +
+  geom_abline(slope=1,intercept = 0,linetype=2) +
+  scale_color_manual(values = c("black", "grey")) +
+  theme_bw() + theme(legend.position = "")
+
+sig_e2 = median(val_losses)
+p_SEs =   ggplot(avg_vars_mat,aes(y_test_obs, SE2^2)) +
+  geom_point() + ylab("Prediction variance") + xlab("Test observations") +
+  ggtitle("d. NN-based prediction variances") + 
+  geom_errorbar(aes(ymin = SE2^2 - SE2sd,
+                    ymax = SE2^2 + SE2sd), col="darkgrey") +
+  geom_hline(yintercept = sig_e2,linetype=2) + ylim(0.25,0.6) +
+  # scale_color_manual(values = c("steelblue", "red")) +
+  theme_bw()
+
+p_SEs
+```
+
+```{r}
+pdf(paste0(path, "NN_sim_7_avg_CIs_",nk,"_v2.pdf"),
+    width = 8, height = 4)
+grid.arrange(p_avg_CIs, p_SEs,nrow=1)
+dev.off()
+```
+
+
+
+```{r}
+pdf(paste0(path, "NN_sim_7_avg_vars_",nk,".pdf"),
+    width = 12, height = 4)
+{
+    
+  tit1 = paste0("nsim = ",j)
+  p1 = ggplot(avg_vars_mat,aes(empsd_ytest, sd_ypred))+
+    geom_point() + ggtitle(tit1)+
+    geom_abline(intercept = 0,slope = 1,linetype=2)
+  
+  p2 = ggplot(avg_vars_mat,aes(empsd_ytest, sqrt(ypred_var1)))+
+    geom_point() + ggtitle(tit1)+
+    geom_abline(intercept = 0,slope = 1,linetype=2)
+  
+  p3 = ggplot(avg_vars_mat,aes(empsd_ytest, sqrt(ypred_var2)))+
+    geom_point() + ggtitle(tit1)+
+    geom_abline(intercept = 0,slope = 1,linetype=2)
+  
+  grid.arrange(p1,p2,p3,nrow=1)
+}
+dev.off()
+```
+
+
+### B=300 one run
+
+```{r}
+j = 7
+val_loss = val_loss_arr[j,]
+ntrain_epoch <- ntrain_epoch_arr[j,]
+yfitmat = y_pred_arr[j,,]
+# colSums(yfitmat == 0)
+summary(val_loss)
+
+ypred = colMeans(yfitmat[,-(1:n)])
+ypred_med = apply(yfitmat[,-(1:n)], 2, median)
+sd_ypred = apply(yfitmat[,-(1:n)],2,sd)
+var_B = apply(yfitmat[,-(1:n)], 2, var)
+plot(empsd_ytest, sd_ypred)
+abline(0,1)
+```
+
+```{r}
+yvalmat = yfitmat[,1:n]
+
+ycountmat = (yvalmat ==0) + 0
+# print(dim(ycountmat))
+ypred_var = apply(t(yfitmat[,-(1:n)]), 1, varfn, Ycount = ycountmat,
+             replace = FALSE, unbiased = TRUE)
+ypred_var2 = apply(t(yfitmat[,-(1:n)]), 1, varfn, Ycount = ycountmat,
+             replace = FALSE, unbiased = FALSE)
+  
+plot(ypred_var, ypred_var2)
+```
+
+- Compare between ypred_var, ypred_var2, 
+
+```{r}
+vars_mat = cbind(
+  empsd_ytest, 
+  sd_ypred,
+  sqrt(ypred_var2),
+  var_B,
+  ypred_var, 
+  ypred_var2
+)
+
+plot(empsd_ytest, sqrt(ypred_var2))
+abline(0,1)
+
+plot(sd_ypred, sqrt(ypred_var2))
+abline(0,1)
+
+plot(empsd_ytest, sd_ypred)
+abline(0,1)
+```
+
+
+
+```{r}
+yval_pred = apply(yvalmat,2,function(v1){
+  mean(v1[v1!= 0])
+})
+plot(y, yval_pred)
+plot(y, yvalmat[112,])
+
+val_yval = apply(yvalmat,2,function(v1){
+  var(v1[v1!= 0])
+})
+summary(val_yval)
+```
+
+- sigma_error on val data
+```{r}
+sig_e2_val = apply(yvalmat,1,function(v1){
+  
+  mean((y_obs[v1!=0] - v1[v1!=0])^2)
+})
+hist(sig_e2_val)
+```
+
+
+
+
+
+
+### Averages
+
+```{r}
+cov_test = apply(test_res[,,6], 2, mean)
+summary(cov_test)
+table(cov_test>= 0.95)
+hist(cov_test)
+```
+
+```{r}
+empsd_test = apply(test_res[,,3], 2, sd) 
+hist(empsd_test )
+
+```
+
+
+```{r}
+y_test = test_res[1,,1]
+
+ds = test_res[,1,3] - test_res[,1,4]
+summary(ds )
+hist(ds)
+```
+
+
+```{r}
+plot(y_test, empsd_test, ylim = c(0,1))
+abline(h = mean(ds)/1.96, col="red")
+abline(h = median(ds)/1.96, col="blue")
+```
+
+
+### One run variances
+
+```{r}
+nk = 123
+
+valmat = val_res[nk,,]
+testmat = test_res[nk,,]
+yfitmat = y_fits[nk,,]
+ypredmat = y_preds[nk,,]
+```
+
+```{r}
+# valmat = val_res[k,,]
+# testmat = test_res[k,,]
+# yfitmat = y_fits[k,,]
+# ypredmat = y_preds[k,,]
+
+y_pred = test_res[k,,3]
+sd_yfit = apply(y_fits[k,,],2, sd ) # var) # sd 
+sd_ypred = apply(y_preds[k,,],2, sd)
+
+y_pred_s = colMeans(y_preds[k,,])
+plot(y_pred, y_pred_s)
+abline(0,1)
+plot(y_pred, sd_ypred)
+plot(empsd_test, sd_ypred)
+```
+
+re-sampled R_i
+
+```{r}
+dim(y_fits[k,,])
+View(val_res[k,,])
+
+y_obs = val_res[k,,1]
+r = val_res[k,,3]
+
+r_abs_resamp = 
+apply(y_fits[k,,], 1,function(y_fit){
+  abs(y_obs - y_fit)
+  # r_abs = (y_obs - y_fit)[r!=0]
+})
+
+plot(r, rowMeans(r_abs_resamp))
+abline(0,1)
+```
+
+```{r}
+r_val = r[r!=0]
+
+r_val_resamp = rowMeans(r_abs_resamp[r!=0, ])
+sd_r_val = apply(r_abs_resamp[r!=0, ],1,sd)
+plot(r_val, sd_r_val)
+```
+
+
+
+
+```{r}
+qt_yfit = apply(y_fits[k,,],2, function(v1){
+  qt = quantile(v1, probs = c(0.2, 0.8))
+  qt[2] - qt[1]
+} ) 
+qt_ypred = apply(y_preds[k,,],2,function(v1){
+  qt = quantile(v1, probs = c(0.2, 0.8))
+  qt[2] - qt[1]
+} ) 
+
+r = val_res[k,,3]
+d = (test_res[k,1,3] - test_res[k,1,4])
+y_val = val_res[k,r!=0,2]
+r_val = r[r!=0]
+
+# sig_y, sig_sdy, sig_1_sdy_, sig_absdiff1, sig_absdiff2, 
+# sig_absdiff3, sig_absdiff4 
+sig_val = cbind(
+  sd_yfit[r!=0],
+  qt_yfit[r!=0],
+  abs(y_val) + 0.01,    
+  abs(y_val - min(y_val)) + 0.1,
+  abs(y_val - min(y_val)) + 0.01,
+  abs(y_val - val_res[k,r!=0,1]) + 0.01,
+  abs(y_val - val_res[k,r!=0,1]) + 0.05
+
+) 
+
+sig_test = cbind(
+  sd_ypred,
+  qt_ypred,
+  abs(y_pred) + 0.01,    
+  abs(y_pred - min(y_val)) + 0.1,
+  abs(y_pred - min(y_val)) + 0.01,
+  abs(y_pred - test_res[k,,1]) + 0.01,
+  abs(y_pred - test_res[k,,1]) + 0.05
+
+) 
+
+dc = cover = NULL
+
+for (j in 1:ncol(sig_val)) {
+  a = sort(r_val/sig_val[,j])[ct]
+  dc = cbind(dc, a*sig_test[,j])
+  
+  lower = y_pred - a*sig_test[,j]
+  upper = y_pred + a*sig_test[,j]
+  cover =  
+    cbind(cover,
+          (test_res[k,,1] >= lower) * (test_res[k,,1] <= upper))
+}
+
+```
+
+### var corrections
+
+```{r}
+# res_test_cover_v4 = res_test_cover
+# d_arr_v4 = d_arr
+res_test_cover_v8 = res_test_cover
+d_arr_v8 = d_arr
+```
+
+
+```{r}
+dim(test_res)
+ct = ceiling((n*0.2+1)*0.95)
+# ct = ceiling((n*0.2)*0.95)
+```
+
+
+```{r}
+# res_test_try = test_res
+res_test_cover = d_arr = NULL
+for (k in 1:nsim) {
+  y_pred = test_res[k,,3]
+  
+  sd_yfit = apply(y_fits[k,,],2, sd ) # var) # sd 
+  sd_ypred = apply(y_preds[k,,],2, sd)
+  
+  r = val_res[k,,3]
+  d = (test_res[k,1,3] - test_res[k,1,4])
+  y_val = val_res[k,r!=0,2]
+  r_val = r[r!=0]
+  y_obs_val = val_res[k,r!=0,1]
+  
+  sig_e2 = mean((y_val - y_obs_val)^2)
+  sig_e_train = mean((val_res[k, r==0 ,2] - val_res[k,r==0,1])^2)
+  
+  var_ypred = sig_e_train + sd_ypred^2
+  var_ypred2 = sig_e2 + sd_ypred^2
+
+  sig_test = cbind(
+    sqrt(var_ypred),
+    sqrt(var_ypred2),
+    sqrt(sig_e_train),
+    sqrt(sig_e2)
+  ) 
+  
+  dc = cover = NULL
+  
+  for (j in 1:ncol(sig_test)) {
+    a = 1.96
+    d_test = a*sig_test[,j]
+    dc = cbind(dc, d_test)
+    
+    lower = y_pred - d_test
+    upper = y_pred + d_test
+    cover =  
+      cbind(cover,
+            (test_res[k,,1] >= lower) * (test_res[k,,1] <= upper))
+  }
+
+  d_arr = abind(d_arr, cbind(d, dc), along = 3)
+  
+  res_test_cover = abind(res_test_cover, cover, along = 3)
+  
+}
+dim(d_arr)
+dim(res_test_cover)
+```
+
+
+```{r}
+covprob = apply(res_test_cover, c(1,2), mean)
+summary(covprob)
+
+plot(cov_test, covprob[,4])
+abline(0,1)
+```
+
+
+```{r}
+dim(d_arr)
+d1 = d_arr[1,1,]
+d2 = d_arr[1,2,]
+d3 = d_arr[1,3,]
+
+my_line <- function(x,y,...){
+    points(x,y,...)
+    abline(a = 0,b = 1,...)
+}
+pairs(cbind(d1,d2,d3),lower.panel = my_line)
+
+pairs(t(d_arr[11,,]),lower.panel = my_line)
+
+d_avg = apply(d_arr,c(2,3),mean)
+pairs(t(d_avg),lower.panel = my_line)
+
+```
+
+
+```{r}
+SE_test = apply(d_arr, c(1,2), mean)/1.96
+
+plot(empsd_test, SE_test[,3])
+abline(0,1)
+```
+
+```{r}
+# SEmat_v3 = SEmat
+# SEmat_v4 = SEmat
+```
+
+
+```{r}
+SEmat = data.frame(
+  cbind(empsd_test, SE_test)
+)
+
+colnames(SEmat)[-(1:2)] = c(
+  "SE_train", "SE_val", "SE_train_only", "SE_val_only"
+)
+
+colnames(SEmat)
+summary(SEmat)
+
+```
+
+
+```{r}
+cols = 3:6
+plist = list()
+rg = range(SEmat[,c(1, cols)])
+kk=0
+for (j in c(cols)) {
+  kk=kk+1
+  coln = colnames(SEmat)[j]
+  plist[[kk]] = 
+    ggplot(SEmat, aes_string("empsd_test", coln))+
+    geom_point()  + ylim(rg) + 
+    # geom_smooth() +
+    geom_abline(intercept = 0, slope = 1) +
+    theme_bw()
+}
+plist[[kk]]
+```
+
+
+```{r}
+vnum = "v8"
+ggsave(paste0("../NN_sim/NN_sim6_SEs_",vnum,".pdf"),
+       plot = marrangeGrob(plist, nrow=2, ncol=2) 
+   #width = 15, height = 9
+   )
+
+write.csv(SEmat, paste0("../NN_sim/NN_sim6_SEs_",vnum,".csv"))
+```
+
+
+```{r}
+colnames(SEmat)
+
+p1 = ggplot(SEmat, aes(empsd_test,sig_sdy/2.4)) +
+  geom_point() + geom_abline(intercept = 0,slope = 1)
+
+p1
+```
+
+```{r}
+head(covprob)
+covprobs = data.frame(
+  cbind(cov_test, covprob)
+)
+colnames(covprobs)[-1] = colnames(SEmat)[-(1:2)]
+
+ggplot(covprobs, aes(cov_test,sig_sd_resamp)) +
+  geom_point() + geom_abline(intercept = 0,slope = 1)
+
+```
+
+
+
+
+
+
+
+

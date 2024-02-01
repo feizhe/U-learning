@@ -1,0 +1,632 @@
+---
+title: "sim scaled lasso"
+author: "Zhe Fei"
+date: "2023-08-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(abind)
+library(scalreg)
+source("sim1_fns.R")
+```
+
+## Set-up
+
+```{r}
+##### set-up
+n = 1000
+ntest = 100
+p= 600
+p0= 15
+s0 = 5
+small = (runif(p0-s0, 0, 0.7) + 0.3) *(-1 + 2*rbinom(p0-s0, 1,0.5))
+small
+# small = small*(abs(small)>=0.5)
+b0 = c(.5,1,1.5,-0.6,-1, small, rep(0, p-p0))
+head(b0,20)
+table(b0==0)
+
+tmp1 = sample(p, p)
+b0 = b0[tmp1]
+s1 = which(b0!=0)
+s1
+b0[s1]
+
+length(b0)
+
+```
+
+
+```{r}
+##### generate data
+sigm1 = 0.5
+int = 1
+dattrain = genDat(b0, n=n, p=p, sigma = sigm1,
+                  xmin = -1, xmax = 1, int = int)
+dattest = genDat(b0, n=ntest, p=p, sigma = sigm1,
+                 xmin = -1, xmax = 1, int = int)
+
+names(dattest)
+dim(dattest$x)
+hist(dattrain$truey)
+plot(dattrain$truey, dattrain$y)
+abline(0,1)
+```
+
+
+
+## Scaled lasso
+
+```{r}
+n1 = n/2
+
+```
+
+```{r}
+n1 = n/2
+sfit = boot_scaled(n, n1= n1, replace = FALSE,
+             dattrain, dattest, 
+             scaled = TRUE, ## set scaled = FALSE to use regular LASSO
+             Int = TRUE)
+
+sfit$sige2val
+sfit$sige2train
+sfit$sige2scale
+sfit$sige2scale2
+```
+
+### One run
+
+```{r}
+detectCores()
+ncore = 8
+cl <- makeCluster(ncore)
+registerDoParallel(cl)
+
+replace = FALSE
+oracle = FALSE
+refit = FALSE
+Int = TRUE
+scaled = TRUE
+```
+
+```{r}
+nboot = 500
+
+predmat = coefmat = sampmat = sige2mat = NULL
+
+
+for (n1 in c(2:8)*100) {
+  print(n1)
+  fit1 <- foreach(i = 1:nboot, .packages=c("MASS","glmnet","scalreg")) %dopar% 
+    boot_scaled(n,n1=n1, dattrain, dattest, 
+        replace = replace, # nzero = 10,
+        oracle = oracle, refit = refit, Int = Int, scaled = scaled)
+  
+  J <- sapply(1:nboot,extract,fit1=fit1,pos=1)
+  ypred <- sapply(1:nboot,extract,fit1=fit1,pos=2)
+  coeff <- sapply(1:nboot,extract,fit1=fit1,pos=3)
+  
+  sige2val = sapply(1:nboot,extract,fit1=fit1,pos=4)
+  sige2train = sapply(1:nboot,extract,fit1=fit1,pos=5)
+  sige2scale = sapply(1:nboot,extract,fit1=fit1,pos=6)
+  sige2scale2 = sapply(1:nboot,extract,fit1=fit1,pos=7)
+
+  coefmat = abind(coefmat, coeff, along = 3)
+  predmat = abind(predmat, ypred, along = 3)
+  sampmat = abind(sampmat, J, along = 3)
+
+  sige2mat = abind(sige2mat, 
+                   cbind(sige2val, sige2train, 
+                         sige2scale, sige2scale2), 
+                   along = 3)
+}
+  
+```
+
+
+```{r}
+dim(sige2mat)
+View(sige2mat[,,1])
+
+apply(sige2mat, c(2,3), mean)
+```
+
+## Loops
+
+
+```{r}
+n=1000
+p=3000
+ntest = 200
+p0= 25
+s0 = 5
+small = (runif(p0-s0, 0, 0.7) + 0.3) *(-1 + 2*rbinom(p0-s0, 1,0.5))
+small
+# small = small*(abs(small)>=0.5)
+b0 = c(.5,1,1.5,-0.6,-1, small, rep(0, p-p0))
+head(b0,20)
+table(b0==0)
+
+tmp1 = sample(p, p)
+b0 = b0[tmp1]
+s1 = which(b0!=0)
+s1
+b0[s1]
+
+length(b0)
+```
+
+```{r}
+sigm1 = 0.5
+int = 1
+dattrain = genDat(b0, n=n, p=p, sigma = sigm1,
+                  xmin = -1, xmax = 1, int = int)
+dattest = genDat(b0, n=ntest, p=p, sigma = sigm1,
+                 xmin = -1, xmax = 1, int = int)
+
+dat_test = cbind(dattest$truey, dattest$y, dattest$x)
+write.csv(dat_test,"sim2_scaledLasso_dattest.csv")
+```
+
+
+
+```{r}
+detectCores()
+ncore = 8
+cl <- makeCluster(ncore)
+registerDoParallel(cl)
+
+replace = FALSE
+oracle = FALSE
+refit = FALSE
+Int = TRUE
+scaled = TRUE
+
+```
+
+```{r}
+#######################
+nboot = 500
+
+pws = c(0.8, 0.9, 0.95)
+n^pws
+```
+
+
+```{r}
+TrainData = list()
+for (nsc in 1:3) {
+  n1 = floor(n^pws[nsc])
+    
+  print(paste("n1 =",n1))
+  source("sim2_scaledLasso_loop.R")
+}
+
+
+stopCluster(cl)
+stopImplicitCluster()
+
+```
+
+### results
+
+```{r}
+simname
+# save.image(paste0(simname, ".RData"))
+
+
+#### smoothed variance
+m = nboot
+nsplit = dim(coefmat)[3]
+
+preds = SEs = SEs2 = SEs_jack =  
+  bootSE = bootPred = COVER =  SIG_E2 = NULL
+for (k in 1:nsplit) {
+  # idx = (1:m) + (k-1)*m
+  
+  sige2 = colMeans(sige2mat[,,k])
+  
+  pred1 = rowMeans(predmat[,,k])
+  bootvar = apply(predmat[,,k], 1, var)
+  bootpred = predmat[,,k][,sample(m,1)]
+  
+  vars = apply(predmat[,,k], 1, varfn, Ycount = t(sampmat[,,k]),
+               replace = replace, unbiased = TRUE)
+  vars2 = apply(predmat[,,k], 1, varfn, Ycount = t(sampmat[,,k]),
+                replace = replace, unbiased = FALSE)
+  
+  varsjack = apply(predmat[,,k], 1, varjack, Ycount = t(sampmat[,,k]))
+  
+  
+  preds = cbind(preds, pred1)
+  SEs = cbind(SEs, sqrt(vars))
+  SEs2 = cbind(SEs2, sqrt(vars2))
+  SEs_jack =  cbind(SEs_jack, sqrt(varsjack))
+  
+  bootSE = cbind(bootSE, sqrt(bootvar))
+  bootPred = cbind(bootPred, bootpred)
+  SIG_E2 = rbind(SIG_E2, sige2)
+}
+
+ytest = dattest$y
+COVER =  NULL
+for (k in 1:nsplit) {
+  pred1 = preds[,k]
+  sige2 = SIG_E2[k,]
+  vars =  SEs[,k]^2
+  vars2 = SEs2[,k]^2
+  
+  covs = NULL
+  for (ci in 1:2) {
+    for (cj in 1:4) {
+      
+      cov1 = as.numeric(
+        (pred1 + 1.96*sqrt(switch(ci,vars, vars2) + sige2[cj])
+         -  ytest)*
+          (pred1 - 1.96*sqrt(switch(ci,vars, vars2) + sige2[cj])
+           - ytest ) < 0
+      )
+      
+      covs = cbind(covs, cov1)
+      
+    }
+  }
+  # colMeans(covs)
+  
+  COVER = abind(COVER, covs, along = 3)
+}
+EmpSD = apply(preds, 1, sd,na.rm = TRUE)
+
+
+dim(COVER)
+covprob = apply(COVER, c(1,2), mean)
+# summary(covprob)
+colMeans(covprob)
+
+# cov1 > cov2, scale > scale2, val > train
+# keep cov1val and  cov1scale
+
+n1 = 250
+#  cov1val  cov1train  cov1scale cov1scale2    cov2val  cov2train  
+# 0.9694554 0.8075743 0.8777723 0.7360891 0.9803960 0.8563366 
+#   cov2scale cov2scale2 (refit)
+# 0.9095545 0.7997525
+
+n1 = 501
+#   cov1val  cov1train  cov1scale cov1scale2    cov2val  cov2train  cov2scale 
+# 0.9514851  0.9070792  0.9697030  0.9217822  0.9614851  0.9279208  0.9785644 
+# cov2scale2 
+# 0.9386634 
+
+n1 = 707
+#    cov1val  cov1train  cov1scale cov1scale2    cov2val  cov2train  
+# 0.9466832 0.9271287 0.9843069 0.9532673 0.9558911 0.9388614 
+#    cov2scale cov2scale2 
+# 0.9903465 0.9620792 
+```
+
+
+```{r}
+res2 = data.frame(
+  ytrue = dattest$truey,
+  ytest = dattest$y,
+  pred = rowMeans(preds,na.rm = TRUE),
+  bootpred = rowMeans(bootPred,na.rm = TRUE),
+  EmpSD,
+  bootEmpSD = apply(bootPred, 1, sd,na.rm = TRUE),
+  SE = rowMeans(SEs,na.rm = TRUE), ## unbiased = TRUE
+  SE2 = rowMeans(SEs2,na.rm = TRUE),  ## unbiased = FALSE
+  SE_jack = rowMeans(SEs_jack,na.rm = TRUE),
+  bootSE = rowMeans(bootSE,na.rm = TRUE)
+)
+
+res2$sig2val = colMeans(SIG_E2)[1]
+res2$sig2train = colMeans(SIG_E2)[2]
+res2$sig2scale = colMeans(SIG_E2)[3]
+res2$sig2scale2 = colMeans(SIG_E2)[4]
+
+res2 = cbind(res2, covprob)
+colnames(res2)[15:22] =
+  c("cov1val","cov1train","cov1scale","cov1scale2",
+    "cov2val","cov2train","cov2scale","cov2scale2")
+
+write.csv(res2, paste0(simname,".csv"))
+
+summary(res2)
+```
+
+```{r}
+SumTab = NULL
+for (nsc in 1:3) {
+  n1 = floor(n^pws[nsc])
+  
+  simname = paste0("sim_scaled_n=",n,"_n1=",n1,"_p=",p,
+                 "_p0=",p0,"_replace=",replace,
+                 "_scaled=",scaled)
+  
+  res2 = read.csv(paste0(simname,".csv"),row.names = 1)
+  
+  sum1 = data.frame(
+    bias = mean(res2$ytest - res2$pred),
+    mae = mean(abs(res2$ytest - res2$pred)),
+    EmpSD = mean(res2$EmpSD),
+    SE = mean(res2$SE),
+    TrueErrVar = mean((dattest$y - dattest$truey)^2),
+    ErrVar1 = mean(res2$sig2val),
+    ErrVarScaled = mean(res2$sig2scale),
+    CovProb = mean(res2$cov1val),
+    CovScaled = mean(res2$cov1scale)
+  )
+  
+  SumTab = rbind(SumTab, sum1)
+
+}
+
+SumTab
+```
+
+```{r}
+library(xtable)
+xtable(SumTab)
+```
+
+### r=n with replacement and B=1
+
+```{r}
+n=1000
+n1 = n
+replace = TRUE
+
+sfit = boot_scaled(n, n1= n1, replace = replace,
+             dattrain, dattest, scaled = TRUE,
+             Int = TRUE)
+
+plot(dattest$y, sfit$ypred)
+
+sfit$sige2val
+sfit$sige2train
+sfit$sige2scale
+sfit$sige2scale2
+```
+### B = 500
+
+```{r}
+print(n1)
+nboot = 500
+detectCores()
+ncore = 8
+cl <- makeCluster(ncore)
+registerDoParallel(cl)
+
+
+```
+
+
+```{r}
+t1 = proc.time()
+fit1 <- foreach(i = 1:nboot, .packages=c("MASS","glmnet","scalreg")) %dopar% 
+  boot_scaled(n,n1=n1, dattrain, dattest, 
+      replace = replace, # nzero = 10,
+      oracle = oracle, refit = refit, Int = Int, scaled = scaled)
+
+print(proc.time() - t1)
+```
+
+
+```{r}
+J <- sapply(1:nboot,extract,fit1=fit1,pos=1)
+ypred <- sapply(1:nboot,extract,fit1=fit1,pos=2)
+coeff <- sapply(1:nboot,extract,fit1=fit1,pos=3)
+
+sige2val = sapply(1:nboot,extract,fit1=fit1,pos=4)
+sige2train = sapply(1:nboot,extract,fit1=fit1,pos=5)
+sige2scale = sapply(1:nboot,extract,fit1=fit1,pos=6)
+sige2scale2 = sapply(1:nboot,extract,fit1=fit1,pos=7)
+
+
+save_sige2 = cbind(sige2val,sige2train, sige2scale, sige2scale2 )
+summary(save_sige2)
+```
+
+
+```{r}
+nsc = 5
+n1 = n
+replace = TRUE
+Int = TRUE
+scaled = FALSE
+  
+print(paste("n1 =",n1))
+source("sim2_scaledLasso_loop.R")
+```
+
+```{r}
+simname
+# save.image(paste0(simname, ".RData"))
+
+
+#### smoothed variance
+m = nboot
+nsplit = dim(coefmat)[3]
+
+preds = SEs = SEs2 = SEs_jack =  
+  bootSE = bootPred = COVER =  SIG_E2 = NULL
+for (k in 1:nsplit) {
+  # idx = (1:m) + (k-1)*m
+  
+  sige2 = colMeans(sige2mat[,,k])
+  
+  pred1 = rowMeans(predmat[,,k])
+  bootvar = apply(predmat[,,k], 1, var)
+  bootpred = predmat[,,k][,sample(m,1)]
+  
+  vars = apply(predmat[,,k], 1, varfn, Ycount = t(sampmat[,,k]),
+               replace = replace, unbiased = TRUE)
+  vars2 = apply(predmat[,,k], 1, varfn, Ycount = t(sampmat[,,k]),
+                replace = replace, unbiased = FALSE)
+  
+  varsjack = apply(predmat[,,k], 1, varjack, Ycount = t(sampmat[,,k]))
+  
+  
+  preds = cbind(preds, pred1)
+  SEs = cbind(SEs, sqrt(vars))
+  SEs2 = cbind(SEs2, sqrt(vars2))
+  SEs_jack =  cbind(SEs_jack, sqrt(varsjack))
+  
+  bootSE = cbind(bootSE, sqrt(bootvar))
+  bootPred = cbind(bootPred, bootpred)
+  SIG_E2 = rbind(SIG_E2, sige2)
+}
+summary(cbind(rowMeans(SEs), 
+              rowMeans(bootSE), 
+              apply(bootPred, 1, sd)
+              ))
+
+
+ytest = dattest$y
+COVER =  NULL
+for (k in 1:nsplit) {
+  
+  pred1 = preds[,k]
+  sige2 = SIG_E2[k,]
+  vars =  SEs[,k]^2
+  vars2 = SEs2[,k]^2
+  
+  pred2 = bootPred[,k]
+  se2 = sqrt(bootSE[,k]^2 + sige2[1])
+  cov_boot = as.numeric(
+        (pred2 + 1.96*se2 -  ytest)*
+          (pred2 - 1.96*se2 - ytest ) < 0)
+  
+  covs = NULL
+  for (ci in 1:2) {
+    for (cj in 1:4) {
+      
+      cov1 = as.numeric(
+        (pred1 + 1.96*sqrt(switch(ci,vars, vars2) + sige2[cj])
+         -  ytest)*
+          (pred1 - 1.96*sqrt(switch(ci,vars, vars2) + sige2[cj])
+           - ytest ) < 0
+      )
+      
+      covs = cbind(covs, cov1)
+      
+    }
+  }
+  # colMeans(covs)
+  covs = cbind(covs, cov_boot)
+      
+  COVER = abind(COVER, covs, along = 3)
+}
+EmpSD = apply(preds, 1, sd, na.rm = TRUE)
+EmpSD_boot = apply(bootPred, 1, sd, na.rm = TRUE)
+
+
+dim(COVER)
+covprob = apply(COVER, c(1,2), mean, na.rm=TRUE)
+# summary(covprob)
+colMeans(covprob)
+
+# cov1 > cov2, scale > scale2, val > train
+# keep cov1val and  cov1scale
+
+```
+
+
+```{r}
+res2 = data.frame(
+  ytrue = dattest$truey,
+  ytest = dattest$y,
+  pred = rowMeans(preds,na.rm = TRUE),
+  bootpred = rowMeans(bootPred,na.rm = TRUE),
+  EmpSD,
+  bootEmpSD = apply(bootPred, 1, sd,na.rm = TRUE),
+  SE = rowMeans(SEs,na.rm = TRUE), ## unbiased = TRUE
+  SE2 = rowMeans(SEs2,na.rm = TRUE),  ## unbiased = FALSE
+  SE_jack = rowMeans(SEs_jack,na.rm = TRUE),
+  bootSE = rowMeans(bootSE,na.rm = TRUE)
+)
+
+res2$sig2val = colMeans(SIG_E2)[1]
+res2$sig2train = colMeans(SIG_E2)[2]
+res2$sig2scale = colMeans(SIG_E2)[3]
+res2$sig2scale2 = colMeans(SIG_E2)[4]
+
+res2 = cbind(res2, covprob)
+colnames(res2)[15:22] =
+  c("cov1val","cov1train","cov1scale","cov1scale2",
+    "cov2val","cov2train","cov2scale","cov2scale2")
+
+write.csv(res2, paste0(simname,".csv"))
+
+summary(res2)
+```
+
+```{r}
+SumTab
+
+sum1 = data.frame(
+    bias = mean(res2$ytest - res2$pred),
+    mae = mean(abs(res2$ytest - res2$pred)),
+    EmpSD = mean(res2$EmpSD),
+    SE = mean(res2$SE),
+    TrueErrVar = mean((dattest$y - dattest$truey)^2),
+    ErrVar1 = mean(res2$sig2val),
+    ErrVarScaled = mean(save_sige2[,4]),
+    CovProb = mean(res2$cov1val),
+    CovScaled = 1
+  )
+
+sum2 = data.frame(
+    bias = mean(res2$ytest - res2$bootpred),
+    mae = mean(abs(res2$ytest - res2$bootpred)),
+    EmpSD = mean(res2$bootEmpSD),
+    SE = mean(res2$bootSE),
+    TrueErrVar = mean((dattest$y - dattest$truey)^2),
+    ErrVar1 = mean(res2$sig2val),
+    ErrVarScaled = mean(save_sige2[,4]),
+    CovProb = mean(res2$cov_boot),
+    CovScaled = 1
+  )
+
+
+SumTab = rbind(SumTab,sum1,sum2)
+rownames(SumTab) = c("r=251","r=501","r=707",
+                     "r=1000(SWR)","B=1")
+```
+
+
+```{r}
+write.csv(SumTab, 
+          "sim_scaled_n=1000_p=3000_p0=25_scaled=TRUE.csv")
+
+
+xtable(SumTab)
+```
+
+
+## PLR
+
+```{r}
+# functions to run PLR
+```
+
+### run on 5 datasets
+
+### summarize the results
+
+
+## POPLR
+
+```{r}
+# functions to run POPLR
+```
+
+## MD
+
+## GRI
+
