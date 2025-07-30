@@ -1,0 +1,86 @@
+---
+title: "NN_sim7 HPCC"
+author: "Zhe Fei"
+date: "2023-06-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(abind)
+library(ggplot2)
+library(gridExtra)
+library(reticulate)
+library(tidyverse)
+
+Sys.setenv(RETICULATE_PYTHON = "C:/Users/84522/AppData/Local/Programs/Python/Python311/python.exe")
+use_python("C:/Users/84522/AppData/Local/Programs/Python/Python311/python.exe")
+
+# Load the NumPy library
+np <- import("numpy")
+
+path = "drive/MyDrive/"
+
+dat_test = read.table(paste0(path,"df_999.txt"))
+y_test = dat_test[,1]
+y_test_obs = dat_test[,2]
+```
+
+
+
+```{r}
+#number of training samples and testing samples
+n=400
+ntest=100
+
+#1st dimension: Iterations; 2nd dimension: Ensembles; 3rd dimension: training/testing sample
+y_preds <- np$array(np$load(paste0(path,"_y_preds_arr_DE2.npy")))
+y_test_preds = y_preds[,,(n+1):(n+ntest)]
+
+#Calculate the mean prediction of each ensemble. The result is a (iterations * y_test size) array.
+EnsembleMean = apply(y_test_preds,c(1,3),mean)
+```
+
+
+
+```{r}
+#Calculate the bias
+Bias = function(x1){
+  return(x1-y_test)
+}
+
+#Calculate the coverage.  SD is the vector of empirical SD at each value of y_test
+Coverage = function(EnsembleMean,SD){
+  
+  #Calculate the ensemble mean. The result is a (iterations * y_test size) matrix
+  Mean = EnsembleMean
+  
+  #Calculate the proportion of ensemble means that are within 1.96 * SD from the true y_test value for each value of y_test. The result it a vector of the coverage proportion for each y_test value.
+  R = c()
+  for (i in 1:ncol(Mean)) {
+    rate = sum( (Mean[,i] < y_testTrue[i] + 1.96 * SD[i]) & (Mean[,i] > y_testTrue[i] - 1.96 * SD[i]) ) / length(Mean[,i])
+    R = c(R, rate)
+  }
+  
+  return(R)
+}
+```
+
+
+
+```{r}
+#Bias and MAE
+bias = t(apply(EnsembleMean,c(1),Bias))
+mae = apply(abs(bias),c(2),mean)
+
+#Empirical variance for each y_test
+variance = apply(EnsembleMean,c(2),var)
+coverage = Coverage(EnsembleMean,sqrt(variance))
+
+print(paste("Mean Bias:  ",mean(c(bias))))
+print(paste("MAE:  ",mean(mae)))
+print(paste("SD:  ",sqrt(mean(variance))))
+print(paste("COV:  ",mean(coverage)))
+```
+
+The above calculates the empirical SD and the coverage within 1.96 * empirical SD. The coverage of only 0.55 is not ideal and does not agree with the results in the paper.
